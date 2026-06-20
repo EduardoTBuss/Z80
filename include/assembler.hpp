@@ -1,15 +1,14 @@
 #pragma once
+#include "encoding.hpp"
+#include "expr.hpp"
+#include "objfmt.hpp"
+#include "types.hpp"
 #include <algorithm>
 #include <cctype>
 #include <iostream>
 #include <sstream>
 #include <string>
 #include <vector>
-
-#include "encoding.hpp"
-#include "expr.hpp"
-#include "objfmt.hpp"
-#include "types.hpp"
 
 class Assembler
 {
@@ -18,6 +17,7 @@ class Assembler
     {
         srcLines_.clear ();
         symTable_.clear ();
+        externSyms_.clear ();
         obj_ = {};
         obj_.filename = filename;
         errors_.clear ();
@@ -52,6 +52,7 @@ class Assembler
   private:
     std::vector< std::string > srcLines_;
     std::unordered_map< std::string, u16 > symTable_;
+    std::unordered_map< std::string, bool > externSyms_;
     ObjectFile obj_;
     std::vector< std::string > errors_;
     std::string currentSeg_;
@@ -143,6 +144,22 @@ class Assembler
                     ++i;
                 line = line.substr (i);
                 i = 0;
+            }
+            else if (j < line.size () && isspace (line[j]))
+            {
+                size_t k = j;
+                while (k < line.size () && isspace (line[k]))
+                    ++k;
+                size_t kEnd = k;
+                while (kEnd < line.size () && !isspace (line[kEnd]))
+                    ++kEnd;
+                std::string nextTok = upper (line.substr (k, kEnd - k));
+                if (nextTok == "EQU" || nextTok == "=")
+                {
+                    pl.label = line.substr (0, j);
+                    line = line.substr (k);
+                    i = 0;
+                }
             }
         }
 
@@ -381,6 +398,7 @@ class Assembler
         {
             for (auto &sym : pl.operands)
             {
+                externSyms_[sym] = true;
                 SymbolEntry se;
                 se.name = sym;
                 se.value = 0;
@@ -536,6 +554,12 @@ class Assembler
             if (b[0] == '(')
                 return 3;
             return 3;
+        }
+        if (a == "(HL)")
+        {
+            if (RegCode::isR8 (b))
+                return 1;
+            return 2;
         }
         if (a[0] == '(')
         {
@@ -742,36 +766,28 @@ class Assembler
             resolveExpr (e, val, true, pl.lineNum, s, rt);
             return (u8)val;
         };
-        auto evalRel = [&] (const std::string &e) -> i8 {
-            u16 val = 0;
-            std::string s;
-            RelocType rt;
-            resolveExpr (e, val, true, pl.lineNum, s, rt);
-            i16 off = (i16)val - (i16)(pc_ + 2);
-            if (off < -128 || off > 127)
-                addError (pl.lineNum, "Relative jump out of range");
-            return (i8)off;
-        };
-        auto addReloc16 = [&] (const std::string &sym) {
+        auto addReloc16 = [&] (const std::string &sym, size_t prefixLen = 0,
+                               i16 addend = 0) {
             if (!sym.empty ())
             {
                 RelocEntry re;
-                re.offset = out.bytes.size ();
+                re.offset = out.bytes.size () + prefixLen;
                 re.type = RelocType::ABS16;
                 re.symbol = sym;
-                re.addend = 0;
+                re.addend = addend;
                 re.segment = currentSeg_;
                 out.relocs_.push_back (re);
             }
         };
-        auto addRelocRel = [&] (const std::string &sym) {
+        auto addRelocRel = [&] (const std::string &sym, size_t prefixLen = 0,
+                                i16 addend = 0) {
             if (!sym.empty ())
             {
                 RelocEntry re;
-                re.offset = out.bytes.size ();
+                re.offset = out.bytes.size () + prefixLen;
                 re.type = RelocType::REL8;
                 re.symbol = sym;
-                re.addend = -2;
+                re.addend = addend;
                 re.segment = currentSeg_;
                 out.relocs_.push_back (re);
             }
@@ -978,19 +994,6 @@ class Assembler
                 return out;
             }
 
-            auto ixiyLD = [&] (u8 pfx, const std::string &reg, const std::string &expr) {
-                i8 d = 0;
-                std::string sym2;
-                RelocType rt;
-                size_t p = expr.find ('+');
-                size_t m = expr.find ('-');
-                if (p != std::string::npos)
-                    d = (i8)evalU8 (expr.substr (p + 1));
-                else if (m != std::string::npos)
-                    d = -(i8)evalU8 (expr.substr (m + 1));
-                return std::pair< u8, i8 >{ pfx, (u8)d };
-            };
-
             if (o0.substr (0, 3) == "(IX")
             {
                 i8 d = 0;
@@ -1004,7 +1007,7 @@ class Assembler
                 }
                 if (r1 >= 0)
                 {
-                    emit ({ 0xDD, static_cast< unsigned char > (0x70 | (u8)r1), (u8)d });
+                    emit ({ 0xDD, (u8)(0x70 | (u8)r1), (u8)d });
                     return out;
                 }
                 emit ({ 0xDD, 0x36, (u8)d, evalU8 (o1) });
@@ -1023,7 +1026,7 @@ class Assembler
                 }
                 if (r1 >= 0)
                 {
-                    emit ({ 0xFD, static_cast< unsigned char > (0x70 | (u8)r1), (u8)d });
+                    emit ({ 0xFD, (u8)(0x70 | (u8)r1), (u8)d });
                     return out;
                 }
                 emit ({ 0xFD, 0x36, (u8)d, evalU8 (o1) });
@@ -1076,13 +1079,13 @@ class Assembler
                 }
                 if (o1 == "(HL)")
                 {
-                    emit ({ static_cast< unsigned char > (0x46 | (u8)r0 << 3) });
+                    emit ({ (u8)(0x46 | (u8)r0 << 3) });
                     return out;
                 }
                 std::string sym2;
                 RelocType rt;
                 u16 addr = evalU16 (o1.substr (1, o1.size () - 2), sym2, rt);
-                addReloc16 (sym2);
+                addReloc16 (sym2, 1, (i16)addr);
                 emit ({ 0x3A, (u8)(addr & 0xFF), (u8)(addr >> 8) });
                 return out;
             }
@@ -1093,7 +1096,7 @@ class Assembler
             }
             if (o0 == "(HL)" && r1 >= 0)
             {
-                emit ({ static_cast< unsigned char > (0x70 | (u8)r1) });
+                emit ({ (u8)(0x70 | (u8)r1) });
                 return out;
             }
             if (o0 == "(HL)")
@@ -1116,7 +1119,7 @@ class Assembler
                 std::string sym2;
                 RelocType rt;
                 u16 addr = evalU16 (o0.substr (1, o0.size () - 2), sym2, rt);
-                addReloc16 (sym2);
+                addReloc16 (sym2, 1, (i16)addr);
                 emit ({ 0x32, (u8)(addr & 0xFF), (u8)(addr >> 8) });
                 return out;
             }
@@ -1127,7 +1130,7 @@ class Assembler
                 u16 addr = evalU16 (o0.substr (1, o0.size () - 2), sym2, rt);
                 u8 opc = o1 == "HL" ? 0x22 : o1 == "BC" ? 0x43 : o1 == "DE" ? 0x53 : 0x73;
                 u8 pfx = (o1 == "BC" || o1 == "DE" || o1 == "SP") ? 0xED : 0;
-                addReloc16 (sym2);
+                addReloc16 (sym2, pfx ? 2 : 1, (i16)addr);
                 if (pfx)
                     emit ({ pfx, opc, (u8)(addr & 0xFF), (u8)(addr >> 8) });
                 else
@@ -1140,7 +1143,7 @@ class Assembler
                 std::string sym2;
                 RelocType rt;
                 u16 addr = evalU16 (o0.substr (1, o0.size () - 2), sym2, rt);
-                addReloc16 (sym2);
+                addReloc16 (sym2, 2, (i16)addr);
                 emit ({ pfx, 0x22, (u8)(addr & 0xFF), (u8)(addr >> 8) });
                 return out;
             }
@@ -1151,7 +1154,7 @@ class Assembler
                 u16 addr = evalU16 (o1.substr (1, o1.size () - 2), sym2, rt);
                 u8 opc = o0 == "HL" ? 0x2A : o0 == "BC" ? 0x4B : o0 == "DE" ? 0x5B : 0x7B;
                 u8 pfx = (o0 == "BC" || o0 == "DE" || o0 == "SP") ? 0xED : 0;
-                addReloc16 (sym2);
+                addReloc16 (sym2, pfx ? 2 : 1, (i16)addr);
                 if (pfx)
                     emit ({ pfx, opc, (u8)(addr & 0xFF), (u8)(addr >> 8) });
                 else
@@ -1164,7 +1167,7 @@ class Assembler
                 std::string sym2;
                 RelocType rt;
                 u16 addr = evalU16 (o1.substr (1, o1.size () - 2), sym2, rt);
-                addReloc16 (sym2);
+                addReloc16 (sym2, 2, (i16)addr);
                 emit ({ pfx, 0x2A, (u8)(addr & 0xFF), (u8)(addr >> 8) });
                 return out;
             }
@@ -1174,7 +1177,7 @@ class Assembler
                 std::string sym2;
                 RelocType rt;
                 u16 v = evalU16 (o1, sym2, rt);
-                addReloc16 (sym2);
+                addReloc16 (sym2, 1, (i16)v);
                 emit ({ (u8)(0x01 | (u8)rpi << 4), (u8)(v & 0xFF), (u8)(v >> 8) });
                 return out;
             }
@@ -1183,7 +1186,7 @@ class Assembler
                 std::string sym2;
                 RelocType rt;
                 u16 v = evalU16 (o1, sym2, rt);
-                addReloc16 (sym2);
+                addReloc16 (sym2, 2, (i16)v);
                 emit ({ 0xDD, 0x21, (u8)(v & 0xFF), (u8)(v >> 8) });
                 return out;
             }
@@ -1192,7 +1195,7 @@ class Assembler
                 std::string sym2;
                 RelocType rt;
                 u16 v = evalU16 (o1, sym2, rt);
-                addReloc16 (sym2);
+                addReloc16 (sym2, 2, (i16)v);
                 emit ({ 0xFD, 0x21, (u8)(v & 0xFF), (u8)(v >> 8) });
                 return out;
             }
@@ -1289,7 +1292,6 @@ class Assembler
         if (op == "INC" || op == "DEC")
         {
             u8 base = op == "INC" ? 0x04 : 0x05;
-            u8 rpb = op == "INC" ? 0x03 : 0x0B;
             if (o0 == "IX")
             {
                 emit ({ 0xDD, (u8)(op == "INC" ? 0x23 : 0x2B) });
@@ -1303,19 +1305,18 @@ class Assembler
             int rpi = RegCode::rp (o0);
             if (rpi >= 0)
             {
-                emit ({ static_cast< unsigned char > ((u8)(op == "INC" ? 0x03 : 0x0B) |
-                                                      (u8)(rpi << 4)) });
+                emit ({ (u8)((u8)(op == "INC" ? 0x03 : 0x0B) | (u8)(rpi << 4)) });
                 return out;
             }
             int ri = RegCode::r8 (o0);
             if (ri >= 0)
             {
-                emit ({ static_cast< unsigned char > ((u8)(base | (u8)ri << 3)) });
+                emit ({ (u8)(base | (u8)(ri << 3)) });
                 return out;
             }
             if (o0 == "(HL)")
             {
-                emit ({ static_cast< unsigned char > ((u8)(base | 0x30)) });
+                emit ({ (u8)(base | 0x30) });
                 return out;
             }
             if (o0.substr (0, 3) == "(IX")
@@ -1329,8 +1330,7 @@ class Assembler
                     else if (s[0] == '-')
                         d = -(i8)evalU8 (s.substr (1));
                 }
-                emit ({ 0xDD, static_cast< unsigned char > (op == "INC" ? 0x34 : 0x35),
-                        (u8)d });
+                emit ({ 0xDD, (u8)(op == "INC" ? 0x34 : 0x35), (u8)d });
                 return out;
             }
             if (o0.substr (0, 3) == "(IY")
@@ -1376,14 +1376,14 @@ class Assembler
                 std::string sym2;
                 RelocType rt;
                 u16 a = evalU16 (o1, sym2, rt);
-                addReloc16 (sym2);
+                addReloc16 (sym2, 1, (i16)a);
                 emit ({ (u8)(0xC2 | (cc[o0] << 3)), (u8)(a & 0xFF), (u8)(a >> 8) });
                 return out;
             }
             std::string sym2;
             RelocType rt;
             u16 a = evalU16 (o0, sym2, rt);
-            addReloc16 (sym2);
+            addReloc16 (sym2, 1, (i16)a);
             emit ({ 0xC3, (u8)(a & 0xFF), (u8)(a >> 8) });
             return out;
         }
@@ -1401,7 +1401,7 @@ class Assembler
                 resolveExpr (o1, tgt, true, pl.lineNum, sym2, rt);
                 i8 d = (i8)((i16)tgt - (i16)(pc_ + 2));
                 if (!sym2.empty ())
-                    addRelocRel (sym2);
+                    addRelocRel (sym2, 1, (i16)tgt);
                 emit ({ cc[o0], (u8)d });
                 return out;
             }
@@ -1411,7 +1411,7 @@ class Assembler
             resolveExpr (o0, tgt, true, pl.lineNum, sym2, rt);
             i8 d = (i8)((i16)tgt - (i16)(pc_ + 2));
             if (!sym2.empty ())
-                addRelocRel (sym2);
+                addRelocRel (sym2, 1, (i16)tgt);
             emit ({ 0x18, (u8)d });
             return out;
         }
@@ -1424,7 +1424,7 @@ class Assembler
             resolveExpr (o0, tgt, true, pl.lineNum, sym2, rt);
             i8 d = (i8)((i16)tgt - (i16)(pc_ + 2));
             if (!sym2.empty ())
-                addRelocRel (sym2);
+                addRelocRel (sym2, 1, (i16)tgt);
             emit ({ 0x10, (u8)d });
             return out;
         }
@@ -1440,14 +1440,14 @@ class Assembler
                 std::string sym2;
                 RelocType rt;
                 u16 a = evalU16 (o1, sym2, rt);
-                addReloc16 (sym2);
+                addReloc16 (sym2, 1, (i16)a);
                 emit ({ (u8)(0xC4 | (cc[o0] << 3)), (u8)(a & 0xFF), (u8)(a >> 8) });
                 return out;
             }
             std::string sym2;
             RelocType rt;
             u16 a = evalU16 (o0, sym2, rt);
-            addReloc16 (sym2);
+            addReloc16 (sym2, 1, (i16)a);
             emit ({ 0xCD, (u8)(a & 0xFF), (u8)(a >> 8) });
             return out;
         }

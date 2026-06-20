@@ -11,6 +11,7 @@ class ExprEval
 {
   public:
     using SymMap = std::unordered_map< std::string, u16 >;
+    using ExternSet = std::unordered_map< std::string, bool >;
 
     struct Result
     {
@@ -20,7 +21,7 @@ class ExprEval
     };
 
     static Result eval (const std::string &expr, const SymMap &syms, u16 pc,
-                        bool secondPass)
+                        bool secondPass, const ExternSet *externs = nullptr)
     {
         std::string e = trim (expr);
         Result res;
@@ -33,8 +34,8 @@ class ExprEval
         try
         {
             size_t pos = 0;
-            res.value =
-                parseExpr (e, pos, syms, pc, secondPass, res.unresolved, res.resolved);
+            res.value = parseExpr (e, pos, syms, pc, secondPass, res.unresolved,
+                                   res.resolved, externs);
         }
         catch (std::runtime_error &ex)
         {
@@ -60,9 +61,10 @@ class ExprEval
     }
 
     static u16 parseExpr (const std::string &e, size_t &pos, const SymMap &syms, u16 pc,
-                          bool second, std::string &unres, bool &resolved)
+                          bool second, std::string &unres, bool &resolved,
+                          const ExternSet *externs)
     {
-        u16 val = parseTerm (e, pos, syms, pc, second, unres, resolved);
+        u16 val = parseTerm (e, pos, syms, pc, second, unres, resolved, externs);
 
         while (pos < e.size ())
         {
@@ -72,7 +74,7 @@ class ExprEval
                 break;
 
             ++pos;
-            u16 rhs = parseTerm (e, pos, syms, pc, second, unres, resolved);
+            u16 rhs = parseTerm (e, pos, syms, pc, second, unres, resolved, externs);
 
             if (op == '+')
                 val += rhs;
@@ -91,9 +93,10 @@ class ExprEval
     }
 
     static u16 parseTerm (const std::string &e, size_t &pos, const SymMap &syms, u16 pc,
-                          bool second, std::string &unres, bool &resolved)
+                          bool second, std::string &unres, bool &resolved,
+                          const ExternSet *externs)
     {
-        u16 val = parseFactor (e, pos, syms, pc, second, unres, resolved);
+        u16 val = parseFactor (e, pos, syms, pc, second, unres, resolved, externs);
 
         while (pos < e.size ())
         {
@@ -109,7 +112,7 @@ class ExprEval
             {
                 ++pos;
                 ++pos;
-                u16 rhs = parseFactor (e, pos, syms, pc, second, unres, resolved);
+                u16 rhs = parseFactor (e, pos, syms, pc, second, unres, resolved, externs);
 
                 if (op == '<')
                     val = (u16)(val << rhs);
@@ -119,7 +122,7 @@ class ExprEval
             else
             {
                 ++pos;
-                u16 rhs = parseFactor (e, pos, syms, pc, second, unres, resolved);
+                u16 rhs = parseFactor (e, pos, syms, pc, second, unres, resolved, externs);
 
                 if (op == '*')
                     val *= rhs;
@@ -139,7 +142,8 @@ class ExprEval
     }
 
     static u16 parseFactor (const std::string &e, size_t &pos, const SymMap &syms, u16 pc,
-                            bool second, std::string &unres, bool &resolved)
+                            bool second, std::string &unres, bool &resolved,
+                            const ExternSet *externs)
     {
         while (pos < e.size () && e[pos] == ' ')
             ++pos;
@@ -150,7 +154,7 @@ class ExprEval
         if (e[pos] == '(')
         {
             ++pos;
-            u16 v = parseExpr (e, pos, syms, pc, second, unres, resolved);
+            u16 v = parseExpr (e, pos, syms, pc, second, unres, resolved, externs);
 
             if (pos < e.size () && e[pos] == ')')
                 ++pos;
@@ -161,12 +165,12 @@ class ExprEval
         if (e[pos] == '-')
         {
             ++pos;
-            return (u16)(-(i16)parseFactor (e, pos, syms, pc, second, unres, resolved));
+            return (u16)(-(i16)parseFactor (e, pos, syms, pc, second, unres, resolved, externs));
         }
         if (e[pos] == '+')
         {
             ++pos;
-            return parseFactor (e, pos, syms, pc, second, unres, resolved);
+            return parseFactor (e, pos, syms, pc, second, unres, resolved, externs);
         }
 
         if (e[pos] == '$' && pos + 1 < e.size () && isxdigit (e[pos + 1]))
@@ -267,6 +271,13 @@ class ExprEval
 
             if (it != syms.end ())
                 return it->second;
+
+            if (externs != nullptr && externs->count (name))
+            {
+                resolved = false;
+                unres = name;
+                return 0;
+            }
 
             if (second)
                 throw std::runtime_error ("Undefined symbol: " + name);

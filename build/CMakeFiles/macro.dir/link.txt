@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/macro.dir/src/macro.cpp.o -o bin/macro
