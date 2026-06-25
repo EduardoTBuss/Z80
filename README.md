@@ -123,7 +123,7 @@ integrador do montador (`asm`) antes da montagem propriamente dita, não
 ### Sintaxe
 
 ```asm
-NOME_DA_MACRO MACRO par1, par2, ...
+MACRO NOME_DA_MACRO par1, par2, ...
     ; corpo da macro - pode referenciar par1, par2...
     ; pode conter outra definicao MACRO...ENDM (macro aninhada)
     ; pode chamar outras macros (chamada aninhada)
@@ -133,8 +133,8 @@ ENDM
 ### Exemplo — macros aninhadas (definição e chamada)
 
 ```asm
-OUTER MACRO val
-    INNER MACRO x
+MACRO OUTER val
+    MACRO INNER x
         LD A, x
         ADD A, val
     ENDM
@@ -315,7 +315,7 @@ A saída em vídeo dos programas de teste é feita via a porta de I/O `0x00`
 
 ---
 
-## 7. Interface Gráfica (`vm-gui`)
+## 7. Interface Gráfica (`gui`)
 
 A GUI Qt5 integra o pipeline completo em uma única janela:
 
@@ -343,7 +343,7 @@ A GUI Qt5 integra o pipeline completo em uma única janela:
 ### Execução
 
 ```bash
-./build/bin/vm-gui
+./build/bin/gui
 ```
 
 ---
@@ -360,7 +360,7 @@ Z80/
 |   |-- expr.hpp             (avaliador de expressoes do montador)
 |   |-- encoding.hpp         (tabelas de codificacao de registradores/modos)
 |   |-- assembler.hpp        (montador de dois passos)
-|   |-- mainwindow.hpp       (janela principal - declaração)
+|   |-- window.hpp           (janela principal - declaração)
 |   |-- objfmt.hpp           (serializacao do formato .obj)
 |   |-- linker.hpp           (ligador de dois passos + formato .exe)
 |   `-- cpu.hpp              (CPU Z80 emulada - executor)
@@ -371,13 +371,12 @@ Z80/
 |   `-- exec.cpp             (CLI do executor: exec)
 |-- gui/
 |   |-- main.cpp             (ponto de entrada da aplicacao Qt5)
-|   `-- mainwindow.cpp       (janela principal - implementacao)
-`-- tests/                   (programas .asm de exemplo/teste)
-    |-- test1.asm                  (macros aninhadas, loop, flags)
-    |-- test2_ix.asm               (enderecamento indexado IX, pilha)
-    |-- test_nested_macro.asm      (macro definida e chamada dentro de outra)
-    |-- mod_a.asm                  (modulo com EXTERN/CALL)
-    `-- mod_b.asm                  (modulo com GLOBAL - ligacao multi-modulo)
+|   `-- window.cpp           (janela principal - implementacao)
+`-- tests/                   (programas .asm de exemplo, verificados)
+    |-- hello_io.asm               (saida via porta de I/O 0)
+    |-- ix_indexed.asm             (enderecamento indexado IX + DB)
+    |-- branch.asm                 (CP + salto condicional JP Z)
+    `-- stack.asm                  (PUSH/POP entre pares de 16 bits)
 ```
 
 ---
@@ -411,28 +410,29 @@ exec programa.exe --load-addr 1000     # Carregador Relocador reposiciona o prog
 
 ---
 
-## 10. Testes incluídos
+## 10. Programas de exemplo (`tests/`)
 
-Os arquivos em `tests/` demonstram, na prática, os requisitos centrais do
-trabalho:
+A pasta `tests/` traz programas `.asm` curtos e **verificados** que exercitam o
+núcleo da toolchain (montagem em dois passos, ligação absoluta e execução na CPU
+emulada). Cada arquivo traz, no próprio cabeçalho, os comandos de build e a saída
+esperada.
 
-- `test1.asm` — uma macro chama outra macro (`PRINT_AB` chama `PRINT_CHAR`
-  duas vezes), validando chamadas aninhadas em uma só passagem.
-- `test_nested_macro.asm` — uma macro (`OUTER`) **define** outra macro
-  (`INNER`) em seu próprio corpo e a chama múltiplas vezes com parâmetros
-  diferentes, validando definição aninhada de macros.
-- `mod_a.asm` / `mod_b.asm` — dois módulos ligados com símbolos `GLOBAL` /
-  `EXTERN`, exercitando a resolução de relocação `CALL` entre módulos.
-- `test2_ix.asm` — endereçamento indexado (`IX+d`), operações de pilha
-  (`PUSH`/`POP`) e troca de registradores de 16 bits.
+| Programa          | Demonstra                                   | Saída |
+|--------------------|---------------------------------------------|-------|
+| `hello_io.asm`     | saída de caractere pela porta de I/O 0       | `Hi!` |
+| `ix_indexed.asm`   | endereçamento indexado `(IX+d)` sobre `DB`   | `IX!` |
+| `branch.asm`       | `CP` + salto condicional `JP Z`              | `Y`   |
+| `stack.asm`        | `PUSH`/`POP` entre pares de 16 bits          | `HI`  |
 
-Para rodar manualmente qualquer teste:
+> **Observação:** os rótulos (labels) são comparados em maiúsculas — defina-os
+> em maiúsculo (`DATA`, não `data`).
+
+Para montar, ligar e executar qualquer um deles (a partir de `build/bin/`):
 
 ```bash
-cd build/bin
-./asm ../../tests/test1.asm /tmp/test1.obj
-./link -o /tmp/test1.exe -org 0000 /tmp/test1.obj
-./exec /tmp/test1.exe
+./asm  ../../tests/hello_io.asm /tmp/hello_io.obj
+./link -abs -o /tmp/hello_io.exe -org 0000 /tmp/hello_io.obj
+./exec /tmp/hello_io.exe
 ```
 
 ---
